@@ -21,6 +21,7 @@ from typing import Any, Callable, Iterable, Sequence, Tuple, Union, Optional
 import flax.linen as nn
 import jax
 from jax import lax
+import jax.experimental
 import jax.numpy as jnp
 import common_types
 from layers import initializers
@@ -31,6 +32,7 @@ from jax.ad_checkpoint import checkpoint_name
 from jax.experimental import shard_map
 import max_logging
 import math
+import time
 
 try:
   from jax.experimental.pallas.ops.tpu import megablox as mblx
@@ -53,6 +55,82 @@ Quant = quantizations.AqtQuantization
 DISPATCH = "dispatch"
 COMBINE = "combine"
 
+# num_layers_passed_m = 0
+
+def save_array_host_m(array, type):
+    # global num_layers_passed_m
+    print("M Storing array ", type, " of dtype: ", array.dtype,  " and shape: ", array.shape)
+    print("M Storing array: ", array)
+    convert_array = array.astype(jnp.float32)
+    timestamp = time.time()
+    output_name = type + "_" + str(timestamp) + ".npy"
+    np.save(output_name, convert_array)
+    print('saved array')
+
+def save_gating_output(array):
+  if not hasattr(save_gating_output, "call_count"):
+    save_gating_output.call_count = 0
+    save_array_host_m(array, "after_gating")    
+
+def save_w0(array):
+  if not hasattr(save_w0, "call_count"):
+    save_w0.call_count = 0
+    save_array_host_m(array, "w0")
+
+def save_w1(array):
+  if not hasattr(save_w1, "call_count"):
+    save_w1.call_count = 0
+    save_array_host_m(array, "w1")
+
+def save_wout(array):
+  if not hasattr(save_wout, "call_count"):
+    save_wout.call_count = 0
+    save_array_host_m(array, "wout")
+
+def save_dispatch_mask(array):
+  if not hasattr(save_dispatch_mask, "call_count"):
+    save_dispatch_mask.call_count = 0
+    save_array_host_m(array, "dispatch_mask")
+
+def save_combine_mask(array):
+  if not hasattr(save_combine_mask, "call_count"):
+    save_combine_mask.call_count = 0
+    save_array_host_m(array, "combine_mask")
+
+def save_dispatch(array):
+  if not hasattr(save_dispatch, "call_count"):
+    save_dispatch.call_count = 0
+    save_array_host_m(array, "dispatch")
+
+def save_layer_w0(array):
+  if not hasattr(save_layer_w0, "call_count"):
+    save_layer_w0.call_count = 0
+    save_array_host_m(array, "layer_w0")
+
+def save_layer_w1(array):
+  if not hasattr(save_layer_w1, "call_count"):
+    save_layer_w1.call_count = 0
+    save_array_host_m(array, "layer_w1")
+
+def save_layer_w0_act(array):
+  if not hasattr(save_layer_w0_act, "call_count"):
+    save_layer_w0_act.call_count = 0
+    save_array_host_m(array, "layer_w0_act")
+  
+def save_layer_multiply(array):
+  if not hasattr(save_layer_multiply, "call_count"):
+    save_layer_multiply.call_count = 0
+    save_array_host_m(array, "layer_multiply")
+
+def save_layer_intermediate(array):
+  if not hasattr(save_layer_intermediate, "call_count"):
+    save_layer_intermediate.call_count = 0
+    save_array_host_m(array, "layer_intermediate")
+  
+def save_combine(array):
+  if not hasattr(save_combine, "call_count"):
+    save_combine.call_count = 0
+    save_array_host_m(array, "combine")
 
 def _get_model_call_mode(config):
   if config.model_cal_mode == "inference":
@@ -326,8 +404,10 @@ class MoeBlock(nn.Module):
     if quantizations.in_serve_mode(self.quant):
       # During aqt convert state we delete kernel weight from params to save memory.
       # Instead they are retrieved from the tensors stored in the 'aqt' collection.
+      print("Generating w0 kernel of zeros")
       w0_kernel = jnp.zeros((num_experts, emb_dim, mlp_dim))
     else:
+      print("Loading param for w0")
       w0_kernel = self.param(
           "wi_0",
           nn.with_logical_partitioning(kernel_init, self.wi_kernel_axes),
@@ -586,11 +666,16 @@ class MoeBlock(nn.Module):
     matmul_precision = lax.Precision(self.config.matmul_precision)
 
     if self.config.capacity_factor > 0:
+      # jax.experimental.io_callback(save_w0, None, w0_kernel)
+      # jax.experimental.io_callback(save_w1, None, w1_kernel)
+      # jax.experimental.io_callback(save_wout, None, wo_kernel)
       # token dropping if needed
       dispatch_mask, combine_mask = self.generate_masks(top_k_indices, softmax_probs)
       mask_axes = ("activation_batch", "activation_length", None, None)
       dispatch_mask = nn.with_logical_constraint(dispatch_mask, mask_axes)
       combine_mask = nn.with_logical_constraint(combine_mask, mask_axes)
+      jax.experimental.io_callback(save_dispatch_mask, None, dispatch_mask)
+      jax.experimental.io_callback(save_combine_mask, None, combine_mask)
       loss = self.load_balance_loss(top_k_indices, softmax_probs)
       inputs = nn.with_logical_constraint(inputs, ("activation_batch", "activation_length", "activation_embed"))
       with jax.named_scope("dispatch"):
@@ -601,6 +686,7 @@ class MoeBlock(nn.Module):
             dispatch,
             ("activation_exp", "activation_batch_no_exp", None, "activation_embed"),
         )
+        jax.experimental.io_callback(save_dispatch, None, dispatch)
       with jax.named_scope("wi_0"):
         w0_kernel_axes = ("exp", None, "mlp")
         w0_kernel = self.maybe_all_gather_kernel_weight_in_expert_parallelism(w0_kernel, w0_kernel_axes)
@@ -613,6 +699,7 @@ class MoeBlock(nn.Module):
             layer_w0,
             ("activation_exp", "activation_batch_no_exp", None, "activation_mlp"),
         )
+        jax.experimental.io_callback(save_layer_w0, None, layer_w0)
         layer_w0 = checkpoint_name(layer_w0, "mlpwi_0")
       with jax.named_scope("wi_1"):
         w1_kernel_axes = ("exp", None, "mlp")
@@ -626,9 +713,14 @@ class MoeBlock(nn.Module):
             layer_w1,
             ("activation_exp", "activation_batch_no_exp", None, "activation_mlp"),
         )
+        jax.experimental.io_callback(save_layer_w1, None, layer_w1)
         layer_w1 = checkpoint_name(layer_w1, "mlpwi_1")
       layer_w0_act = _convert_to_activation_function(self.config.mlp_activations[0])(layer_w0)
+      jax.experimental.io_callback(save_layer_w0_act, None, layer_w0_act)
+  
       layer_multiply = jnp.multiply(layer_w0_act, layer_w1).astype(self.dtype)
+      jax.experimental.io_callback(save_layer_multiply, None, layer_multiply)
+
       with jax.named_scope("wo"):
         wo_kernel_axes = ("exp", "mlp", None)
         wo_kernel = self.maybe_all_gather_kernel_weight_in_expert_parallelism(wo_kernel, wo_kernel_axes)
@@ -639,6 +731,7 @@ class MoeBlock(nn.Module):
             intermediate_layer,
             ("activation_exp", "activation_batch_no_exp", None, "activation_embed"),
         )
+        jax.experimental.io_callback(save_layer_intermediate, None, intermediate_layer)
         intermediate_layer = checkpoint_name(intermediate_layer, "mlpwo")
       with jax.named_scope("combine"):
         # Matmul & element wise operation
@@ -648,6 +741,8 @@ class MoeBlock(nn.Module):
             combine_mask,
             precision=matmul_precision,
         )
+        jax.experimental.io_callback(save_combine, None, output)
+
       return output, loss
     else:
       top_k_weights /= top_k_weights.sum(-1, keepdims=True)
@@ -692,6 +787,8 @@ class MoeBlock(nn.Module):
         name="gate",
         matmul_precision=self.config.matmul_precision,
     )(inputs)
+    print("Num experts: ", self.num_experts, " num experts per token: ", self.num_experts_per_tok, " capacity factor: ", self.config.capacity_factor)
+    jax.experimental.io_callback(save_gating_output, None, gate_logits)
 
     w0_kernel, w1_kernel, wo_kernel = self.generate_kernels(cfg.num_experts, cfg.emb_dim, cfg.mlp_dim)
 

@@ -239,6 +239,7 @@ class MaxEngine(engine_api.Engine):
     Returns:
       kv_cache: For the resulting text.
     """
+    jax.debug.print("ajaygopi@ performing prefill for padded tokens {x} of shape {y}", x=padded_tokens, y=padded_tokens.shape)
     if existing_prefix:
       raise ValueError("We don't know what to do with existing_prefix")
 
@@ -265,6 +266,7 @@ class MaxEngine(engine_api.Engine):
           rngs={"params": new_rng},
           mutable=["cache"],
       )
+    jax.debug.print("Prefill flat logits: {f} of shape {y}", f=flat_logits, y=flat_logits.shape)
 
     next_pos = jnp.full((1, 1), true_length, dtype=jnp.int32)
     generated_tokens = jnp.zeros((1, 1), dtype=jnp.int32)
@@ -284,6 +286,8 @@ class MaxEngine(engine_api.Engine):
         nucleus_topp=self.config.decode_sampling_nucleus_p,
         temperature=self.config.decode_sampling_temperature,
     )
+    jax.debug.print("Selected logits: {s} of shape {y}", s=selected_logits, y=selected_logits.shape)
+    jax.debug.print("First token generated during prefill {x}", x=first_generated_token)
 
     all_valid = jnp.ones(first_generated_token.shape, dtype=jnp.int8)
     result = engine_api.ResultTokens(
@@ -319,6 +323,7 @@ class MaxEngine(engine_api.Engine):
       rng: Optional[jax.random.PRNGKey] = None,
   ) -> Tuple[DecodeState, engine_api.ResultTokens]:
     """Run one generate step"""
+    jax.debug.print("ajaygopi@ performing generate")
     if rng is None:
       rng = jax.random.PRNGKey(0)
 

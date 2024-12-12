@@ -20,6 +20,8 @@ limitations under the License.
 
 
 from typing import Optional
+
+import jax.experimental
 from layers import quantizations
 from layers import linears
 from layers import initializers
@@ -34,6 +36,8 @@ from layers import normalizations
 from layers import models
 import common_types
 import max_logging
+import numpy as np
+import time
 
 Array = common_types.Array
 Config = common_types.Config
@@ -50,6 +54,37 @@ Quant = quantizations.AqtQuantization
 # The Decoder Layer for Mistral or Mixtral
 # -----------------------------------------
 
+num_layers_passed = 0
+
+def save_array_host(array, type):
+    global num_layers_passed
+    print("num_layers_passed: ", num_layers_passed)
+    if num_layers_passed == 0:
+      print("Storing array ", type, " of dtype: ", array.dtype,  " and shape: ", array.shape)
+      print("Storing array: ", array)
+      convert_array = array.astype(jnp.float32)
+      timestamp = time.time()
+      output_name = type + "_" + str(timestamp) + ".npy"
+      np.save(output_name, convert_array)
+      print('saved array')
+
+def save_input(array):
+  save_array_host(array, "input")
+
+def save_post_attention_output(array):
+  save_array_host(array, "after_attention")
+
+def save_post_moe_output(array):
+  save_array_host(array, "after_moe")
+    
+def save_final_output(array):
+  global num_layers_passed
+  save_array_host(array, "final")
+  num_layers_passed+=1
+
+# @jax.jit
+# def save_array(x):
+#     jax.experimental.io_callback(save_array_host, None, x)
 
 class MistralDecoderLayer(nn.Module):
   """Transformer decoder layer that attends to the encoder."""
@@ -67,6 +102,8 @@ class MistralDecoderLayer(nn.Module):
       deterministic,
       model_mode,
   ):
+    jax.debug.print("running mistral decoder layer timestamp: " + str(time.time()))
+    jax.experimental.io_callback(save_input, None, inputs)
     cfg = self.config
     mesh = self.mesh
 
@@ -109,6 +146,8 @@ class MistralDecoderLayer(nn.Module):
         deterministic=deterministic,
         model_mode=model_mode,
     )
+    jax.experimental.io_callback(save_post_attention_output, None, attention_lnx)
+
 
     attention_lnx = nn.with_logical_constraint(attention_lnx, ("activation_batch", "activation_length", "activation_embed"))
     intermediate_inputs = inputs + attention_lnx
@@ -137,6 +176,7 @@ class MistralDecoderLayer(nn.Module):
           quant=self.quant,
       )(hidden_states)
       mlp_lnx = nn.with_logical_constraint(mlp_lnx, ("activation_batch", "activation_length", "activation_embed"))
+      jax.experimental.io_callback(save_post_moe_output, None, mlp_lnx)
     else:
       mlp_lnx = linears.MlpBlock(
           intermediate_dim=cfg.mlp_dim,
@@ -150,13 +190,19 @@ class MistralDecoderLayer(nn.Module):
       )(hidden_states, deterministic=deterministic)
       mlp_lnx = nn.with_logical_constraint(mlp_lnx, ("activation_batch", "activation_length", "activation_embed"))
 
+
     layer_output = mlp_lnx + intermediate_inputs
     layer_output = nn.Dropout(rate=cfg.dropout_rate, broadcast_dims=(-2,))(layer_output, deterministic=deterministic)
-
+  
+    # jax.debug.print("First element of layer output is: {x}", x=jnp.ravel(layer_output)[0])
+    jax.experimental.io_callback(save_final_output, None, layer_output)
+  
     layer_output = nn.with_logical_constraint(
         layer_output,
         ("activation_batch", "activation_length", "activation_embed"),
     )
+    # jax.debug.print("ajaygopi@ mistral decoder layer output: {x}", x=layer_output)
+    # jax.numpy.save(("mistral_decoder_layer_output_" + str(time.time())), layer_output)
 
     if cfg.num_experts > 1 and load_balance_loss is not None:
       self.sow("intermediates", "moe_lb_loss", load_balance_loss)

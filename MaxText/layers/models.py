@@ -393,6 +393,7 @@ class Decoder(nn.Module):
         )
       else:
         for lyr in range(cfg.num_decoder_layers):
+          jax.debug.print("ajaygopi@ performing decoder layer: " + str(lyr))
           y = RemattedBlockLayer(config=cfg, mesh=mesh, name=f"layers_{lyr}", quant=self.quant)(
               y,
               decoder_segment_ids,
@@ -474,7 +475,7 @@ class Transformer(nn.Module):
       model_mode=common_types.MODEL_MODE_TRAIN,
   ):
     """Applies Transformer decoder-branch on encoded-input and target."""
-
+    jax.debug.print("ajaygopi@ calling transformer")
     if decoder_segment_ids is not None and model_mode == common_types.MODEL_MODE_AUTOREGRESSIVE:
       raise ValueError(
           f"During autoregressive decoding we assume the tokens are in the active sequence"
