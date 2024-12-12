@@ -651,6 +651,7 @@ class MoeBlock(nn.Module):
 
   def maybe_all_gather_kernel_weight_in_expert_parallelism(self, kernel, kernel_axes):
     if self.is_expert_parallelism_enabled():
+      print("All gathering")
       # This will trigger all-gather using weight_dtype
       # relax it unless really necessary in expert parallelism only
       # Otherwise compiler will handle communication automatically
@@ -724,6 +725,7 @@ class MoeBlock(nn.Module):
       with jax.named_scope("wo"):
         wo_kernel_axes = ("exp", "mlp", None)
         wo_kernel = self.maybe_all_gather_kernel_weight_in_expert_parallelism(wo_kernel, wo_kernel_axes)
+        jax.experimental.io_callback(save_wout, None, wo_kernel)
         intermediate_layer = self.get_einsum(rhs_mesh_axes=wo_kernel_axes)(
             "EBCH,EHM -> EBCM", layer_multiply, wo_kernel, precision=matmul_precision
         )
